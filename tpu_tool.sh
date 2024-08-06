@@ -13,7 +13,7 @@ function show_help {
     echo "TPU Tool - Simplify Google Cloud TPU VM management"
     echo "Usage: $0 [command] [args...]"
     echo "Commands:"
-    echo "  create [name] [accelerator_type] [runtime_version] [--no-attach] [--preemptible] Create a TPU VM with the given name"
+    echo "  create [name] [accelerator_type] [runtime_version] [--no-attach] [--spot] Create a TPU VM with the given name"
     echo "  delete [name]                                       Delete the TPU VM with the given name"
     echo "  start [name]                                        Start the TPU VM with the given name"
     echo "  stop [name]                                         Stop the TPU VM with the given name"
@@ -39,13 +39,13 @@ function create_tpu {
     local accelerator_type=${2:-$ACCELERATOR_TYPE}
     local runtime_version=${3:-$RUNTIME_VERSION} 
     local no_attach_flag=false
-    local preemptible_flag=false
+    local spot_flag=false
 
     shift 3
     while [[ "$#" -gt 0 ]]; do
         case $1 in
             --no-attach|-n) no_attach_flag=true ;;
-            --preemptible|-p) preemptible_flag=true ;;
+            --spot|-s) spot_flag=true ;;
             *) echo "Unknown flag: $1" ; exit 1 ;;
         esac
         shift
@@ -53,8 +53,8 @@ function create_tpu {
 
     local additional_args=""
 
-    if [[ $preemptible_flag = true ]]; then
-        additional_args="--preemptible"
+    if [[ $spot_flag = true ]]; then
+        additional_args="--spot"
     fi
 
     echo "Creating TPU VM '$name' with accelerator type '$accelerator_type' and runtime version '$runtime_version'..."
@@ -74,12 +74,12 @@ function create_tpu {
             --accelerator-type "$accelerator_type" \
             --version "$runtime_version" \
             --metadata startup-script="#! /bin/bash
-              sudo mkdir -p /home/mrwhite0racle
-              sudo mount /dev/sdb /home/mrwhite0racle
+              sudo mkdir -p /home/mrwhite0racle/persist
+              sudo mount /dev/sdb /home/mrwhite0racle/persist
               sudo useradd -m -s /bin/bash mrwhite0racle
               echo 'mrwhite0racle ALL=(ALL) NOPASSWD:ALL' | sudo tee /etc/sudoers.d/mrwhite0racle
-              sudo chown -R mrwhite0racle:mrwhite0racle /home/mrwhite0racle
-              echo '/dev/sdb /home/mrwhite0racle ext4 defaults 0 0' | sudo tee -a /etc/fstab" \
+              sudo chown -R mrwhite0racle:mrwhite0racle /home/mrwhite0racle/persist
+              echo '/dev/sdb /home/mrwhite0racle/persist ext4 defaults 0 0' | sudo tee -a /etc/fstab" \
             --data-disk source=projects/$(gcloud config get-value project)/zones/$ZONE/disks/$DISK_NAME,mode=$DISK_MODE\
             $additional_args
     fi
@@ -94,14 +94,29 @@ function create_tpu {
 
 function setup_tpu {
     local name=$1
+    local mount_gcs=$2
     local external_ip
     external_ip=$(get_external_ip "$name")
 
     echo "Setting up TPU VM/Pod '$name'..."
 
     copy $name "setup_tpu.sh" "/home/mrwhite0racle/setup_tpu.sh"
+    copy $name "reset_tpu.sh" "/home/mrwhite0racle/reset_tpu.sh"
     execute $name "chmod +x /home/mrwhite0racle/setup_tpu.sh"
-    execute $name "/home/mrwhite0racle/setup_tpu.sh"
+    execute $name "chmod +x /home/mrwhite0racle/reset_tpu.sh"
+    execute $name "/home/mrwhite0racle/setup_tpu.sh --mount-gcs=$mount_gcs"
+    echo "TPU VM/Pod '$name' setup complete."
+}
+
+function reset_tpu {
+    local name=$1
+    local external_ip
+    external_ip=$(get_external_ip "$name")
+
+    echo "Resetting TPU VM/Pod '$name'..."
+
+    execute $name "/home/mrwhite0racle/reset_tpu.sh"
+    echo "TPU VM/Pod '$name' reset complete."
 }
 
 function update_ssh_config {
@@ -201,6 +216,30 @@ function execute {
     echo "Command executed."
 }
 
+function execute_persistent {
+    local name=$1
+    shift
+    local command="$@"
+    local session_name="persistent_session"
+    local log_file="/tmp/screen_output.log"
+
+    echo "Executing command '$command' persistently on TPU VM '$name'..."
+    formatted_command=$(printf "%q" "$command")
+    echo "Formatted command: $formatted_command"
+    gcloud compute tpus tpu-vm ssh $name --zone "$ZONE" --worker=all --command="rm -rf $log_file && touch $log_file && screen -L -Logfile $log_file -dmS $session_name bash -c $formatted_command && tail -f $log_file"
+    echo "Persistent command executed. Streaming output..."
+}
+
+function fetch_output {
+    local name=$1
+    local session_name="persistent_session"
+    local log_file="/tmp/screen_output.log"
+
+    echo "Fetching latest output from persistent process on TPU VM '$name'..."
+    gcloud compute tpus tpu-vm ssh $name --zone "$ZONE" --worker=all --command="tail -f $output_file" #screen -S $session_name -X hardcopy $output_file && cat $output_file"
+    echo "Output fetched."
+}
+
 function remove_known_host {
     local external_ip=$1
     echo "Removing known host entry for '$external_ip'..."
@@ -214,7 +253,7 @@ _tpu_tool_completions() {
     _init_completion || return
 
     local commands="create delete start stop update-ssh-config ssh attach-disk copy-github-key list help"
-    local create_flags="--no-attach --preemptible -n -p"
+    local create_flags="--no-attach --spot -n -s"
 
     case "${prev}" in
         create)
@@ -284,13 +323,21 @@ case $1 in
         fi
         stop_tpu $2
         ;;
-    setup)
+    reset)
         if [ $# -ne 2 ]; then
-            echo "Error: 'setup' command requires a name argument."
+            echo "Error: 'reset' command requires a name argument."
             show_help
             exit 1
         fi
-        setup_tpu $2
+        reset_tpu $2
+        ;;
+    setup)
+        if [ $# -lt 2 ]; then
+            echo "Error: 'setup' command requires a name argument. ==> $@ $1, $2, $3 , ${@:5}, $#"
+            show_help
+            exit 1
+        fi
+        setup_tpu $2 $3
         ;;
     update-ssh-config)
         if [ $# -ne 2 ]; then
@@ -344,6 +391,24 @@ case $1 in
         fi
 
         execute $2 $3
+        ;;
+    execute-persistent)
+        if [ $# -lt 3 ]; then
+            echo "Error: 'execute-persistent' command requires a name and command arguments."
+            show_help
+            exit 1
+        fi
+
+        execute_persistent $2 $3
+        ;;
+    fetch-output)
+        if [ $# -ne 2 ]; then
+            echo "Error: 'fetch-output' command requires a name argument."
+            show_help
+            exit 1
+        fi
+
+        fetch_output $2
         ;;
     help)
         show_help

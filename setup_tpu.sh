@@ -8,6 +8,7 @@ pip install tensorflow[cpu] keras orbax optax clu grain augmax transformers open
 
 pip install flaxdiff
 
+# pip install -U numpy>=2.0.1
 
 ulimit -n 65535
 
@@ -32,6 +33,35 @@ EOF"
 
 # Reload the systemd configuration
 sudo systemctl daemon-reload
+
+
+# Installing and setting up gcsfuse
+export GCSFUSE_REPO=gcsfuse-`lsb_release -c -s`
+echo "deb [signed-by=/usr/share/keyrings/cloud.google.asc] https://packages.cloud.google.com/apt $GCSFUSE_REPO main" | sudo tee /etc/apt/sources.list.d/gcsfuse.list
+curl https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo tee /usr/share/keyrings/cloud.google.asc
+sudo apt update
+sudo apt install -y gcsfuse libgl1
+
+# Define the file name
+gcsfuse_conf="$HOME/gcsfuse.yml"
+
+# Define the contents of the file
+gcsfuse_conf_content=$(cat <<EOF
+file-cache:
+  max-size-mb: 81920
+  cache-file-for-range-read: True
+metadata-cache:
+  stat-cache-max-size-mb: 4096
+  ttl-secs: 60
+  type-cache-max-size-mb: 4096
+file-system:
+  kernel-list-cache-ttl-secs: 60
+  ignore-interrupts: True
+EOF
+)
+
+# Create the file and write the contents
+echo "$gcsfuse_conf_content" > $gcsfuse_conf
 
 wget https://secure.nic.cz/files/knot-resolver/knot-resolver-release.deb
 sudo dpkg -i knot-resolver-release.deb
@@ -81,34 +111,6 @@ sudo systemctl start kresd@13.service
 sudo systemctl start kresd@14.service
 sudo systemctl start kresd@15.service
 sudo systemctl start kresd@16.service
-
-# Installing and setting up gcsfuse
-export GCSFUSE_REPO=gcsfuse-`lsb_release -c -s`
-echo "deb [signed-by=/usr/share/keyrings/cloud.google.asc] https://packages.cloud.google.com/apt $GCSFUSE_REPO main" | sudo tee /etc/apt/sources.list.d/gcsfuse.list
-curl https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo tee /usr/share/keyrings/cloud.google.asc
-sudo apt update
-sudo apt install -y gcsfuse libgl1
-
-# Define the file name
-gcsfuse_conf="$HOME/gcsfuse.yml"
-
-# Define the contents of the file
-gcsfuse_conf_content=$(cat <<EOF
-file-cache:
-  max-size-mb: 81920
-  cache-file-for-range-read: True
-metadata-cache:
-  stat-cache-max-size-mb: 4096
-  ttl-secs: 60
-  type-cache-max-size-mb: 4096
-file-system:
-  kernel-list-cache-ttl-secs: 60
-  ignore-interrupts: True
-EOF
-)
-
-# Create the file and write the contents
-echo "$gcsfuse_conf_content" > $gcsfuse_conf
 
 # Check for --mount-gcs argument
 for arg in "$@"
