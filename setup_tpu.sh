@@ -4,11 +4,14 @@
 pip install jax[tpu] flax[all] -f https://storage.googleapis.com/jax-releases/libtpu_releases.html
 
 # Install CPU version of tensorflow
-pip install tensorflow[cpu] keras orbax optax clu grain augmax transformers opencv-python pandas tensorflow-datasets jupyterlab python-dotenv scikit-learn termcolor wrapt wandb
+pip install tensorflow[cpu] diffusers keras orbax optax clu grain augmax albumentations datasets transformers opencv-python pandas tensorflow-datasets jupyterlab python-dotenv scikit-learn termcolor wrapt wandb
 
-pip install flaxdiff
+pip install flaxdiff gcsfs
 
 # pip install -U numpy>=2.0.1
+
+# Add the env var "TOKENIZERS_PARALLELISM=false" to the .bashrc file
+echo "export TOKENIZERS_PARALLELISM=false" >> ~/.bashrc
 
 ulimit -n 65535
 
@@ -48,7 +51,7 @@ gcsfuse_conf="$HOME/gcsfuse.yml"
 # Define the contents of the file
 gcsfuse_conf_content=$(cat <<EOF
 file-cache:
-  max-size-mb: 81920
+  max-size-mb: 40960
   cache-file-for-range-read: True
 metadata-cache:
   stat-cache-max-size-mb: 4096
@@ -95,22 +98,8 @@ done
 echo "Nameservers added to /etc/resolv.conf"
 
 sudo systemctl stop systemd-resolved
-sudo systemctl start kresd@1.service
-sudo systemctl start kresd@2.service
-sudo systemctl start kresd@3.service
-sudo systemctl start kresd@4.service
-sudo systemctl start kresd@5.service
-sudo systemctl start kresd@6.service
-sudo systemctl start kresd@7.service
-sudo systemctl start kresd@8.service
-sudo systemctl start kresd@9.service
-sudo systemctl start kresd@10.service
-sudo systemctl start kresd@11.service
-sudo systemctl start kresd@12.service
-sudo systemctl start kresd@13.service
-sudo systemctl start kresd@14.service
-sudo systemctl start kresd@15.service
-sudo systemctl start kresd@16.service
+
+$ systemctl start kresd@{1..240}.service
 
 # Check for --mount-gcs argument
 for arg in "$@"

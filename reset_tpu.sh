@@ -1,5 +1,6 @@
 #!/bin/bash
 
+rm -rf /tmp/*
 # Find all devices matching /dev/accel*
 devices=$(ls /dev/accel* 2>/dev/null)
 

@@ -102,6 +102,7 @@ function setup_tpu {
 
     copy $name "setup_tpu.sh" "/home/mrwhite0racle/setup_tpu.sh"
     copy $name "reset_tpu.sh" "/home/mrwhite0racle/reset_tpu.sh"
+    copy $name "$HOME/.netrc"
     execute $name "chmod +x /home/mrwhite0racle/setup_tpu.sh"
     execute $name "chmod +x /home/mrwhite0racle/reset_tpu.sh"
     execute $name "/home/mrwhite0racle/setup_tpu.sh --mount-gcs=$mount_gcs"
