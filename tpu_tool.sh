@@ -62,14 +62,19 @@ function create_tpu {
     
     if [[ $no_attach_flag = true ]]; then
         echo "Creating TPU VM without attaching a disk..."
-        gcloud compute tpus tpu-vm create "$name" \
+        if gcloud compute tpus tpu-vm create "$name" \
             --zone "$ZONE" \
             --accelerator-type "$accelerator_type" \
             --version "$runtime_version" \
-            $additional_args
+            $additional_args ; then
+            echo "TPU VM '$name' created."
+        else
+            echo "Error: Failed to create TPU VM '$name'."
+            exit 1
+        fi
     else
         echo "Creating TPU VM with attaching a disk..."
-        gcloud compute tpus tpu-vm create "$name" \
+        if gcloud compute tpus tpu-vm create "$name" \
             --zone "$ZONE" \
             --accelerator-type "$accelerator_type" \
             --version "$runtime_version" \
@@ -81,7 +86,12 @@ function create_tpu {
               sudo chown -R mrwhite0racle:mrwhite0racle /home/mrwhite0racle/persist
               echo '/dev/sdb /home/mrwhite0racle/persist ext4 defaults 0 0' | sudo tee -a /etc/fstab" \
             --data-disk source=projects/$(gcloud config get-value project)/zones/$ZONE/disks/$DISK_NAME,mode=$DISK_MODE\
-            $additional_args
+            $additional_args ; then
+            echo "TPU VM '$name' created."
+        else
+            echo "Error: Failed to create TPU VM '$name'."
+            exit 1
+        fi
     fi
 
     # Update SSH config file
