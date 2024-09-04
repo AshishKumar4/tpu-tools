@@ -13,7 +13,7 @@ function show_help {
     echo "TPU Tool - Simplify Google Cloud TPU VM management"
     echo "Usage: $0 [command] [args...]"
     echo "Commands:"
-    echo "  create [name] [accelerator_type] [runtime_version] [--no-attach] [--spot] Create a TPU VM with the given name"
+    echo "  create [name] [accelerator_type] [runtime_version] [--no-attach] [--spot] [--queued] Create a TPU VM with the given name"
     echo "  delete [name]                                       Delete the TPU VM with the given name"
     echo "  start [name]                                        Start the TPU VM with the given name"
     echo "  stop [name]                                         Stop the TPU VM with the given name"
@@ -40,32 +40,40 @@ function create_tpu {
     local runtime_version=${3:-$RUNTIME_VERSION} 
     local no_attach_flag=false
     local spot_flag=false
+    local queued=false
 
     shift 3
     while [[ "$#" -gt 0 ]]; do
         case $1 in
             --no-attach|-n) no_attach_flag=true ;;
             --spot|-s) spot_flag=true ;;
+            --queued) queued=true ;;
             *) echo "Unknown flag: $1" ; exit 1 ;;
         esac
         shift
     done
 
     local additional_args=""
+    
+    local create_cmd="gcloud compute tpus tpu-vm create $name --version $runtime_version";
 
     if [[ $spot_flag = true ]]; then
         additional_args="--spot"
     fi
 
-    echo "Creating TPU VM '$name' with accelerator type '$accelerator_type' and runtime version '$runtime_version'..."
+    if [[ $queued = true ]]; then
+        create_cmd="gcloud compute tpus queued-resources create resource-$name --runtime-version $runtime_version --node-id $name";
+    fi
+
+
+    echo "Creating TPU VM '$name' with accelerator type '$accelerator_type' and runtime version '$runtime_version' with additional args: $additional_args..."
     # echo "Additional arguments: $additional_args, no_attach_flag: $no_attach_flag"
-    
+
     if [[ $no_attach_flag = true ]]; then
         echo "Creating TPU VM without attaching a disk..."
-        if gcloud compute tpus tpu-vm create "$name" \
+        if $create_cmd \
             --zone "$ZONE" \
             --accelerator-type "$accelerator_type" \
-            --version "$runtime_version" \
             $additional_args ; then
             echo "TPU VM '$name' created."
         else
@@ -74,10 +82,9 @@ function create_tpu {
         fi
     else
         echo "Creating TPU VM with attaching a disk..."
-        if gcloud compute tpus tpu-vm create "$name" \
+        if  $create_cmd \
             --zone "$ZONE" \
             --accelerator-type "$accelerator_type" \
-            --version "$runtime_version" \
             --metadata startup-script="#! /bin/bash
               sudo mkdir -p /home/mrwhite0racle/persist
               sudo mount /dev/sdb /home/mrwhite0racle/persist
@@ -140,7 +147,7 @@ function update_ssh_config {
     sed -i.bak "/^Host $name$/,/^$/d" "$SSH_CONFIG_FILE"
     
     # Add new entry
-    echo -e "Host $name\n  HostName $external_ip\n  IdentityFile ~/.ssh/id_rsa\n  User mrwhite0racle" >> "$SSH_CONFIG_FILE"
+    echo -e "Host $name\n  HostName $external_ip\n  IdentityFile ~/.ssh/google_compute_engine\n  User mrwhite0racle" >> "$SSH_CONFIG_FILE"
     echo "SSH config updated."
 }
 
@@ -166,8 +173,8 @@ function copy_github_key {
     echo "Copying GitHub SSH key to TPU VM '$name'..."
     
     # Copy the SSH key to the TPU VM
-    scp $GITHUB_KEY "mrwhite0racle@$external_ip:/home/mrwhite0racle/.ssh/id_rsa"
-    scp "${GITHUB_KEY}.pub" "mrwhite0racle@$external_ip:/home/mrwhite0racle/.ssh/id_rsa.pub"
+    scp $GITHUB_KEY "$name:/home/mrwhite0racle/.ssh/id_rsa"
+    scp "${GITHUB_KEY}.pub" "$name:/home/mrwhite0racle/.ssh/id_rsa.pub"
 
     # Add the SSH key to the SSH agent on the TPU VM
     gcloud compute tpus tpu-vm ssh "$name" --zone "$ZONE" --command "sudo chown -R mrwhite0racle:mrwhite0racle /home/mrwhite0racle/.ssh && sudo chmod 600 /home/mrwhite0racle/.ssh/id_rsa && sudo chmod 644 /home/mrwhite0racle/.ssh/id_rsa.pub && eval \$(ssh-agent -s) && ssh-add /home/mrwhite0racle/.ssh/id_rsa"

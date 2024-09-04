@@ -1,0 +1,5 @@
+[default]
+entity = ashishkumar4
+project = flaxdiff
+base_url = https://api.wandb.ai
+
