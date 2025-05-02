@@ -1,5 +1,17 @@
 #!/bin/bash
 
+# Install miniconda
+mkdir -p ~/miniconda3
+wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O ~/miniconda3/miniconda.sh
+bash ~/miniconda3/miniconda.sh -b -u -p ~/miniconda3
+rm ~/miniconda3/miniconda.sh
+source ~/miniconda3/bin/activate
+conda init --all
+
+# Create a new conda environment
+conda create -n flaxdiff python=3.12 -y
+conda activate flaxdiff
+
 # Install JAX and Flax
 pip install jax[tpu] flax[all] -f https://storage.googleapis.com/jax-releases/libtpu_releases.html
 
@@ -7,8 +19,6 @@ pip install jax[tpu] flax[all] -f https://storage.googleapis.com/jax-releases/li
 pip install tensorflow[cpu] diffusers keras orbax optax clu grain augmax albumentations datasets transformers opencv-python pandas tensorflow-datasets jupyterlab python-dotenv scikit-learn termcolor wrapt wandb
 
 pip install flaxdiff gcsfs
-
-# pip install -U numpy>=2.0.1
 
 # Add the env var "TOKENIZERS_PARALLELISM=false" to the .bashrc file
 echo "export TOKENIZERS_PARALLELISM=false" >> ~/.bashrc

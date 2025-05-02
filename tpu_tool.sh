@@ -117,6 +117,11 @@ function setup_tpu {
 
     echo "Setting up TPU VM/Pod '$name'..."
 
+    # First run update-ssh-config to ensure the SSH config is updated
+    update_ssh_config $name
+    # Then run github key copy
+    copy_github_key $name
+    # Then run the setup script
     copy $name "setup_tpu.sh" "/home/mrwhite0racle/setup_tpu.sh"
     copy $name "reset_tpu.sh" "/home/mrwhite0racle/reset_tpu.sh"
     copy $name "$HOME/.netrc"
