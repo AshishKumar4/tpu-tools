@@ -68,10 +68,6 @@ gcsfuse_conf_content=$(cat <<EOF
 file-cache:
   max-size-mb: 40960
   cache-file-for-range-read: True
-  enable-parallel-downloads: True
-  parallel-downloads-per-file: 128
-  download-chunk-size-mb: 256
-  max-parallel-downloads: -1
 metadata-cache:
   stat-cache-max-size-mb: 4096
   ttl-secs: 60
@@ -79,7 +75,6 @@ metadata-cache:
 file-system:
   kernel-list-cache-ttl-secs: 60
   ignore-interrupts: True
-cache-dir: "/tmp/gcsfuse" 
 EOF
 )
 
