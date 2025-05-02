@@ -10,7 +10,7 @@ conda init
 conda activate flaxdiff
 
 # # Install JAX and Flax
-pip install jax[tpu] flax[all] -f https://storage.googleapis.com/jax-releases/libtpu_releases.html
+pip install jax[tpu]==0.5.3 flax[all] -f https://storage.googleapis.com/jax-releases/libtpu_releases.html
 
 pip install --pre torch torchvision --index-url https://download.pytorch.org/whl/nightly/cpu
 
