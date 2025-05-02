@@ -12,13 +12,19 @@ conda init --all
 conda create -n flaxdiff python=3.12 -y
 conda activate flaxdiff
 
-# Install JAX and Flax
-pip install jax[tpu] flax[all] -f https://storage.googleapis.com/jax-releases/libtpu_releases.html
+# # Install JAX and Flax
+pip install jax[tpu]==0.5.3 flax[all] -f https://storage.googleapis.com/jax-releases/libtpu_releases.html
 
+pip install --pre torch torchvision --index-url https://download.pytorch.org/whl/nightly/cpu
+
+pip install 'torch_xla[tpu] @ https://storage.googleapis.com/pytorch-xla-releases/wheels/tpuvm/torch_xla-2.7.0.dev-cp311-cp311-linux_x86_64.whl' \
+  -f https://storage.googleapis.com/libtpu-releases/index.html \
+  -f https://storage.googleapis.com/libtpu-wheels/index.html
+  
 # Install CPU version of tensorflow
 pip install tensorflow[cpu] diffusers keras orbax optax clu grain augmax albumentations datasets transformers opencv-python pandas tensorflow-datasets jupyterlab python-dotenv scikit-learn termcolor wrapt wandb
 
-pip install flaxdiff gcsfs
+pip install flaxdiff gcsfs decord video-reader-rs colorlog
 
 # Add the env var "TOKENIZERS_PARALLELISM=false" to the .bashrc file
 echo "export TOKENIZERS_PARALLELISM=false" >> ~/.bashrc
