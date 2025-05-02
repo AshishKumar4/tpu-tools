@@ -86,12 +86,12 @@ function create_tpu {
             --zone "$ZONE" \
             --accelerator-type "$accelerator_type" \
             --metadata startup-script="#! /bin/bash
-              sudo mkdir -p /home/mrwhite0racle/persist
-              sudo mount /dev/sdb /home/mrwhite0racle/persist
-              sudo useradd -m -s /bin/bash mrwhite0racle
-              echo 'mrwhite0racle ALL=(ALL) NOPASSWD:ALL' | sudo tee /etc/sudoers.d/mrwhite0racle
-              sudo chown -R mrwhite0racle:mrwhite0racle /home/mrwhite0racle/persist
-              echo '/dev/sdb /home/mrwhite0racle/persist ext4 defaults 0 0' | sudo tee -a /etc/fstab" \
+              sudo mkdir -p /home/$USER/persist
+              sudo mount /dev/sdb /home/$USER/persist
+              sudo useradd -m -s /bin/bash $USER
+              echo '$USER ALL=(ALL) NOPASSWD:ALL' | sudo tee /etc/sudoers.d/$USER
+              sudo chown -R $USER:$USER /home/$USER/persist
+              echo '/dev/sdb /home/$USER/persist ext4 defaults 0 0' | sudo tee -a /etc/fstab" \
             --data-disk source=projects/$(gcloud config get-value project)/zones/$ZONE/disks/$DISK_NAME,mode=$DISK_MODE\
             $additional_args ; then
             echo "TPU VM '$name' created."
@@ -117,12 +117,12 @@ function setup_tpu {
 
     echo "Setting up TPU VM/Pod '$name'..."
 
-    copy $name "setup_tpu.sh" "/home/mrwhite0racle/setup_tpu.sh"
-    copy $name "reset_tpu.sh" "/home/mrwhite0racle/reset_tpu.sh"
+    copy $name "setup_tpu.sh" "/home/$USER/setup_tpu.sh"
+    copy $name "reset_tpu.sh" "/home/$USER/reset_tpu.sh"
     copy $name "$HOME/.netrc"
-    execute $name "chmod +x /home/mrwhite0racle/setup_tpu.sh"
-    execute $name "chmod +x /home/mrwhite0racle/reset_tpu.sh"
-    execute $name "/home/mrwhite0racle/setup_tpu.sh --mount-gcs=$mount_gcs"
+    execute $name "chmod +x /home/$USER/setup_tpu.sh"
+    execute $name "chmod +x /home/$USER/reset_tpu.sh"
+    execute $name "/home/$USER/setup_tpu.sh --mount-gcs=$mount_gcs"
     echo "TPU VM/Pod '$name' setup complete."
 }
 
@@ -133,7 +133,7 @@ function reset_tpu {
 
     echo "Resetting TPU VM/Pod '$name'..."
 
-    execute $name "/home/mrwhite0racle/reset_tpu.sh"
+    execute $name "/home/$USER/reset_tpu.sh"
     echo "TPU VM/Pod '$name' reset complete."
 }
 
@@ -147,7 +147,7 @@ function update_ssh_config {
     sed -i.bak "/^Host $name$/,/^$/d" "$SSH_CONFIG_FILE"
     
     # Add new entry
-    echo -e "Host $name\n  HostName $external_ip\n  IdentityFile ~/.ssh/google_compute_engine\n  User mrwhite0racle" >> "$SSH_CONFIG_FILE"
+    echo -e "Host $name\n  HostName $external_ip\n  IdentityFile ~/.ssh/google_compute_engine\n  User $USER" >> "$SSH_CONFIG_FILE"
     echo "SSH config updated."
 }
 
@@ -173,11 +173,11 @@ function copy_github_key {
     echo "Copying GitHub SSH key to TPU VM '$name'..."
     
     # Copy the SSH key to the TPU VM
-    scp $GITHUB_KEY "$name:/home/mrwhite0racle/.ssh/id_rsa"
-    scp "${GITHUB_KEY}.pub" "$name:/home/mrwhite0racle/.ssh/id_rsa.pub"
+    scp $GITHUB_KEY "$name:/home/$USER/.ssh/id_rsa"
+    scp "${GITHUB_KEY}.pub" "$name:/home/$USER/.ssh/id_rsa.pub"
 
     # Add the SSH key to the SSH agent on the TPU VM
-    gcloud compute tpus tpu-vm ssh "$name" --zone "$ZONE" --command "sudo chown -R mrwhite0racle:mrwhite0racle /home/mrwhite0racle/.ssh && sudo chmod 600 /home/mrwhite0racle/.ssh/id_rsa && sudo chmod 644 /home/mrwhite0racle/.ssh/id_rsa.pub && eval \$(ssh-agent -s) && ssh-add /home/mrwhite0racle/.ssh/id_rsa"
+    gcloud compute tpus tpu-vm ssh "$name" --zone "$ZONE" --command "sudo chown -R $USER:$USER /home/$USER/.ssh && sudo chmod 600 /home/$USER/.ssh/id_rsa && sudo chmod 644 /home/$USER/.ssh/id_rsa.pub && eval \$(ssh-agent -s) && ssh-add /home/$USER/.ssh/id_rsa"
     
     echo "GitHub SSH key copied and added to the SSH agent on TPU VM '$name'."
 }
