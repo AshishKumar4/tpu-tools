@@ -30,6 +30,124 @@ TMUX_SESSION_NAME="tpu-cluster"
 SCRIPT_VERSION="1.0.0"
 
 # ======================================================
+# Universal Flag Parsing
+# ======================================================
+
+# Array of supported flags across all commands
+declare -a SUPPORTED_FLAGS=(
+  "zone" 
+  "no-attach" 
+  "spot" 
+  "queued"
+  "force-recreate"
+  "mount-gcs"
+)
+
+# Parse all arguments and separate flags from positional arguments
+# Usage: parse_flags "$@"
+# Returns: 
+#   FLAG_zone, FLAG_no_attach, etc. as global variables
+#   POSITIONAL_ARGS - array containing only positional arguments
+function parse_flags {
+    # Reset all flag variables
+    for flag in "${SUPPORTED_FLAGS[@]}"; do
+        # Convert dash to underscore in variable names
+        flag_var="FLAG_${flag//-/_}"
+        unset "$flag_var"
+    done
+    
+    # Initialize positional args array
+    POSITIONAL_ARGS=()
+    
+    # Process all arguments
+    while [[ "$#" -gt 0 ]]; do
+        case "$1" in
+            # Handle flags with values (--flag=value or --flag value)
+            --zone=*)
+                FLAG_zone="${1#*=}"
+                shift
+                ;;
+            --zone)
+                if [[ -z "$2" || "$2" == --* ]]; then
+                    print_error "Error: --zone requires a value"
+                    return 1
+                fi
+                FLAG_zone="$2"
+                shift 2
+                ;;
+            --mount-gcs=*)
+                FLAG_mount_gcs="${1#*=}"
+                shift
+                ;;
+            --mount-gcs)
+                if [[ -z "$2" || "$2" == --* ]]; then
+                    print_error "Error: --mount-gcs requires a value"
+                    return 1
+                fi
+                FLAG_mount_gcs="$2"
+                shift 2
+                ;;
+            # Handle boolean flags
+            --no-attach|--n)
+                FLAG_no_attach=true
+                shift
+                ;;
+            --spot|-s)
+                FLAG_spot=true
+                shift
+                ;;
+            --queued)
+                FLAG_queued=true
+                shift
+                ;;
+            --force-recreate)
+                FLAG_force_recreate=true
+                shift
+                ;;
+            # Handle unknown flags
+            --*)
+                local flag="${1#--}"
+                if [[ "$flag" == *=* ]]; then
+                    local flag_name="${flag%%=*}"
+                    local flag_value="${flag#*=}"
+                    print_warning "Unknown flag: --$flag_name (with value: $flag_value)"
+                else
+                    print_warning "Unknown flag: $1"
+                fi
+                shift
+                ;;
+            # Everything else is a positional argument
+            *)
+                POSITIONAL_ARGS+=("$1")
+                shift
+                ;;
+        esac
+    done
+    
+    # If zone was not specified, use default
+    FLAG_zone=${FLAG_zone:-$ZONE}
+
+    return 0
+}
+
+# Exports flags as arguments for command execution
+# Usage: get_flag_args
+# Returns: String of flag arguments to pass to other functions
+function get_flag_args {
+    local args=""
+    
+    # Add all defined flags to the args string
+    [[ -n "$FLAG_zone" && "$FLAG_zone" != "$ZONE" ]] && args+=" --zone=$FLAG_zone"
+    [[ "$FLAG_no_attach" == true ]] && args+=" --no-attach"
+    [[ "$FLAG_spot" == true ]] && args+=" --spot"
+    [[ "$FLAG_queued" == true ]] && args+=" --queued"
+    [[ "$FLAG_force_recreate" == true ]] && args+=" --force-recreate"
+    [[ -n "$FLAG_mount_gcs" ]] && args+=" --mount-gcs=$FLAG_mount_gcs"
+    
+    echo "$args"
+}
+
+# ======================================================
 # Helper Functions
 # ======================================================
 
@@ -232,27 +350,57 @@ function get_external_ip {
 }
 
 function create_tpu {   
-    local name=$1
-    local accelerator_type=${2:-$ACCELERATOR_TYPE}
-    local runtime_version=${3:-$RUNTIME_VERSION} 
+    local name=""
+    local accelerator_type=$ACCELERATOR_TYPE
+    local runtime_version=$RUNTIME_VERSION 
     local no_attach_flag=false
     local spot_flag=false
     local queued=false
     local zone=$ZONE
+    local positional_args=()
 
-    shift 3
+    # Parse all arguments
     while [[ "$#" -gt 0 ]]; do
         case $1 in
-            --no-attach|-n) no_attach_flag=true ;;
-            --spot|-s) spot_flag=true ;;
-            --queued) queued=true ;;
-            --zone) 
-                zone="$2"
+            --no-attach|-n)
+                no_attach_flag=true
                 shift ;;
-            *) print_error "Unknown flag: $1" ; return 1 ;;
+            --spot|-s)
+                spot_flag=true
+                shift ;;
+            --queued)
+                queued=true
+                shift ;;
+            --zone)
+                if [[ -z "$2" || "$2" == --* ]]; then
+                    print_error "Error: --zone requires an argument."
+                    return 1
+                fi
+                zone="$2"
+                shift 2 ;; # Shift flag and value
+            --zone=*)
+                zone="${1#*=}"
+                shift ;; # Shift flag=value
+            -*)
+                print_error "Unknown flag: $1"
+                return 1 ;;
+            *)
+                # Assume positional argument
+                positional_args+=("$1")
+                shift ;;
         esac
-        shift
     done
+
+    # Check if we have enough positional arguments
+    if [[ ${#positional_args[@]} -lt 1 ]]; then
+        print_error "Error: TPU name is required"
+        return 1
+    fi
+
+    # Assign positional arguments
+    name=${positional_args[0]}
+    [[ ${#positional_args[@]} -gt 1 ]] && accelerator_type=${positional_args[1]}
+    [[ ${#positional_args[@]} -gt 2 ]] && runtime_version=${positional_args[2]}
 
     local additional_args=""
     
@@ -404,7 +552,10 @@ function ssh_to_tpu {
     
     print_info "Connecting to ${BOLD}${name}${NC} (${external_ip})..."
     
-    # SSH with port forwarding
+    # Remove stale host keys for this IP
+    ssh-keygen -R "$external_ip" 2>/dev/null
+
+    # SSH with port forwarding (bypass known_hosts to avoid stale key issues)
     ssh -A \
         -L 8888:localhost:8888 \
         -L 8889:localhost:8889 \
@@ -417,6 +568,7 @@ function ssh_to_tpu {
         -L 6008:localhost:6008 \
         -L 6009:localhost:6009 \
         -o StrictHostKeyChecking=no \
+        -o UserKnownHostsFile=/dev/null \
         "$name"
         
     if [[ $? -ne 0 ]]; then
@@ -470,19 +622,22 @@ function copy_github_key {
     # Update SSH config first
     update_ssh_config "$name" "$zone"
     
+    # Remove stale host keys
+    ssh-keygen -R "$external_ip" 2>/dev/null
+
     # Create .ssh directory on TPU VM
-    ssh -o StrictHostKeyChecking=no "$name" "mkdir -p ~/.ssh && chmod 700 ~/.ssh" &>/dev/null
-    
+    ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "$name" "mkdir -p ~/.ssh && chmod 700 ~/.ssh" &>/dev/null
+
     # Copy the key
-    scp -o StrictHostKeyChecking=no "$GITHUB_KEY" "$name:~/.ssh/id_ed25519" &>/dev/null
-    
+    scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "$GITHUB_KEY" "$name:~/.ssh/id_ed25519" &>/dev/null
+
     if [[ $? -eq 0 ]]; then
         # Set proper permissions
-        ssh -o StrictHostKeyChecking=no "$name" "chmod 600 ~/.ssh/id_ed25519" &>/dev/null
+        ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "$name" "chmod 600 ~/.ssh/id_ed25519" &>/dev/null
         print_success "GitHub SSH key copied to ${name}"
-        
+
         # Add GitHub to known_hosts
-        ssh -o StrictHostKeyChecking=no "$name" \
+        ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "$name" \
             "ssh-keyscan -t rsa github.com >> ~/.ssh/known_hosts 2>/dev/null" &>/dev/null
         
         print_info "Added GitHub to known_hosts on ${name}"
@@ -545,12 +700,13 @@ function copy_to_tpu {
     fi
     
     # Copy the file/directory
+    local scp_opts="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
     if [[ -d "$source" ]]; then
         # It's a directory, add the -r flag
-        scp -o StrictHostKeyChecking=no -r "$source" "$name:$destination"
+        scp $scp_opts -r "$source" "$name:$destination"
     else
         # It's a file
-        scp -o StrictHostKeyChecking=no "$source" "$name:$destination"
+        scp $scp_opts "$source" "$name:$destination"
     fi
     
     if [[ $? -eq 0 ]]; then
@@ -577,10 +733,10 @@ function execute_on_tpu {
     
     # Execute the command
     print_info "Executing on ${name}..."
-    
+
     # Display command output with a distinctive border
     echo -e "${BLUE}╭─────── Command Output ───────╮${NC}"
-    ssh -o StrictHostKeyChecking=no "$name" "$command"
+    ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "$name" "$command"
     local exit_code=$?
     echo -e "${BLUE}╰───────────────────────────────╯${NC}"
     
@@ -605,9 +761,10 @@ function setup_tpu {
     # Update SSH config first
     update_ssh_config "$name" "$zone"
     
-    # Copy setup script
+    # Copy setup script (resolve path relative to this script's directory)
+    local script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     print_info "Copying setup_tpu.sh to ${name}..."
-    copy_to_tpu "$name" "setup_tpu.sh" "/home/$USER/setup_tpu.sh" "$zone"
+    copy_to_tpu "$name" "${script_dir}/setup_tpu.sh" "/home/$USER/setup_tpu.sh" "$zone"
     copy_to_tpu "$name" "$HOME/.netrc" "/home/$USER/.netrc" "$zone"
     
     if [[ $? -ne 0 ]]; then
@@ -649,10 +806,10 @@ function setup_tpu {
 
 function init_tmux_session {
     local session_name=$1
-    local window_name=${2:-"main"}
+    local force_recreate_flag=${2:-false}
     
     # If session exists but needs to be killed and recreated
-    if [[ -n "$FORCE_RECREATE_SESSION" ]]; then
+    if [[ "$force_recreate_flag" == true ]]; then
         if tmux has-session -t "$session_name" 2>/dev/null; then
             print_warning "Force recreating session ${BOLD}${session_name}${NC}"
             tmux kill-session -t "$session_name" 2>/dev/null
@@ -666,7 +823,7 @@ function init_tmux_session {
     fi
     
     # Create a new session
-    if ! tmux new-session -d -s "$session_name" -n "$window_name"; then
+    if ! tmux new-session -d -s "$session_name" -n "main"; then
         print_error "Failed to create tmux session: ${BOLD}${session_name}${NC}"
         return 1
     fi
@@ -674,7 +831,7 @@ function init_tmux_session {
     # Give tmux a moment to initialize the session properly
     sleep 0.5
     
-    print_success "Created new tmux session: ${BOLD}${session_name}${NC}${GREEN} with window: ${BOLD}${window_name}${NC}"
+    print_success "Created new tmux session: ${BOLD}${session_name}${NC}${GREEN} with window: ${BOLD}main${NC}"
     return 0
 }
 
@@ -893,58 +1050,98 @@ function get_cluster_status {
 # ======================================================
 
 function spawn_tpus {
-    local base_name=$1
-    local count=${2:-1}
-    local accelerator_type=${3:-$ACCELERATOR_TYPE}
-    local user_command=${4:-""}
+    # Default values
+    local base_name=""
+    local count=1
+    local accelerator_type=${ACCELERATOR_TYPE:-v4-8} # Default from env or v4-8
+    local user_command=""
     local no_attach_flag=false
     local spot_flag=false
     local queued=false
-    local zone=$ZONE
-    
-    # Parse additional flags
-    shift 4
+    local zone=${ZONE:-us-central2-b} # Default from env or us-central2-b
+    local force_recreate_flag=false
+    local positional_args=()
+
+    # Parse flags first, collect positional args
     while [[ "$#" -gt 0 ]]; do
         case $1 in
-            --no-attach|-n) no_attach_flag=true ;;
-            --spot|-s) spot_flag=true ;;
-            --queued) queued=true ;;
-            --force-recreate) 
-                FORCE_RECREATE_SESSION=true 
-                ;;
-            --zone) 
-                zone="$2"
+            --no-attach|-n)
+                no_attach_flag=true
                 shift ;;
+            --spot|-s)
+                spot_flag=true
+                shift ;;
+            --queued)
+                queued=true
+                shift ;;
+            --force-recreate)
+                force_recreate_flag=true
+                shift ;;
+            --zone)
+                if [[ -z "$2" || "$2" == --* ]]; then
+                    print_error "Error: --zone requires an argument."
+                    return 1
+                fi
+                zone="$2"
+                shift 2 ;; # Shift flag and value
             --zone=*)
                 zone="${1#*=}"
-                ;;
-            *) print_error "Unknown flag: $1" ; return 1 ;;
+                shift ;; # Shift flag=value
+            -*)
+                print_error "Unknown flag: $1"
+                return 1 ;;
+            *)
+                # Assume positional argument
+                positional_args+=("$1")
+                shift ;;
         esac
-        shift
     done
-    
-    # Define additional args for TPU creation
-    local additional_args=""
-    if [[ $no_attach_flag = true ]]; then
-        additional_args="$additional_args --no-attach"
+
+    # Assign positional arguments from the collected array
+    # Expected order: base_name [count] [accelerator_type] [user_command]
+    base_name=${positional_args[0]:-""}
+    # Use existing defaults if positional args are missing
+    if [[ ${#positional_args[@]} -gt 1 ]]; then
+        count=${positional_args[1]}
     fi
+    if [[ ${#positional_args[@]} -gt 2 ]]; then
+        accelerator_type=${positional_args[2]}
+    fi
+    if [[ ${#positional_args[@]} -gt 3 ]]; then
+        # Combine remaining positional args into the user command
+        user_command="${positional_args[@]:3}"
+    fi
+
+    # Validate required base_name
+    if [[ -z "$base_name" ]]; then
+        print_error "Error: Base name for TPUs is required."
+        print_info "Usage: $0 spawn <base_name> [count] [accelerator_type] [command] [--zone <zone>] [--spot] [--queued] [--no-attach] [--force-recreate]"
+        return 1
+    fi
+
+    # Define additional args for TPU creation using parsed flags
+    local additional_args=""
     if [[ $spot_flag = true ]]; then
         additional_args="$additional_args --spot"
     fi
     if [[ $queued = true ]]; then
         additional_args="$additional_args --queued"
     fi
+    # Always include the zone, even if it's the default
     additional_args="$additional_args --zone $zone"
-    
+
     print_header "Spawning TPU Cluster: ${base_name}"
     print_info "Number of TPUs: ${CYAN}${count}${NC}"
     print_info "Accelerator Type: ${CYAN}${accelerator_type}${NC}"
     print_info "Zone: ${CYAN}${zone}${NC}"
-    
+    if [[ $spot_flag = true ]]; then print_info "Using Spot VMs: ${CYAN}true${NC}"; fi
+    if [[ $queued = true ]]; then print_info "Using Queued Resources: ${CYAN}true${NC}"; fi
+    if [[ $force_recreate_flag = true ]]; then print_info "Force Recreate Tmux: ${CYAN}true${NC}"; fi
+
     if [[ -n "$user_command" ]]; then
         print_info "Command to execute: ${CYAN}${user_command}${NC}"
     fi
-    
+
     # Check for dependencies
     if ! command -v tmux &> /dev/null; then
         print_error "tmux is required but not installed. Please install tmux first."
@@ -958,10 +1155,12 @@ function spawn_tpus {
         return 1
     fi
     
-    # Initialize tmux session
-    if ! init_tmux_session "$TMUX_SESSION_NAME"; then
-        print_error "Failed to create tmux session. Try again with --force-recreate"
-        print_info "You can run: $0 spawn $base_name $count $accelerator_type \"$user_command\" --force-recreate $additional_args"
+    # Initialize tmux session (use force_recreate_flag)
+    if ! init_tmux_session "$TMUX_SESSION_NAME" "$force_recreate_flag"; then
+        print_error "Failed to initialize tmux session."
+        if [[ $force_recreate_flag = false ]]; then
+            print_info "Try running with --force-recreate flag."
+        fi
         return 1
     fi
     
@@ -1134,7 +1333,7 @@ function spawn_tpus {
                 fi
             else
                 echo "Failed to create TPU ${tpu_name}" >> "$tpu_log"
-                run_in_tmux_pane "$TMUX_SESSION_NAME" "$window_name" "$pane_index" "clear && echo -e '${BOLD}TPU: ${CYAN}${tpu_name}${NC}\n\n${RED}✗ Failed to create TPU${NC}'"
+                run_in_tmux_pane "$TMUX_SESSION_NAME" "$window_name" "$pane_index" "clear && echo -e '${BOLD}TPU: ${CYAN}${tpu_name}${NC}\n\n${RED}✗ Failed to create TPU in zone ${zone}${NC}'"
             fi
             
             # Log completion
@@ -1156,9 +1355,14 @@ function spawn_tpus {
     # Switch to dashboard window for better visibility
     tmux select-window -t "$TMUX_SESSION_NAME:dashboard"
     
-    # Attach to the tmux session
-    print_info "TPU spawning initiated. Attaching to tmux session..."
-    tmux attach-session -t "$TMUX_SESSION_NAME"
+    # Attach to the tmux session (use no_attach_flag)
+    if [[ $no_attach_flag = false ]]; then
+        print_info "TPU spawning initiated. Attaching to tmux session..."
+        tmux attach-session -t "$TMUX_SESSION_NAME"
+    else
+        print_info "TPU spawning initiated in the background."
+        print_info "You can attach later with: tmux attach -t ${TMUX_SESSION_NAME}"
+    fi
     
     # When the user detaches, clean up the dashboard background process
     if [[ -n "$dashboard_pid" ]]; then
@@ -1211,12 +1415,24 @@ if [[ $# -eq 0 ]]; then
     exit 0
 fi
 
-case "$1" in
+# Extract the command
+COMMAND=$1
+shift
+
+# Parse all remaining arguments using universal parser
+parse_flags "$@"
+if [[ $? -ne 0 ]]; then
+    # Error message already displayed by parse_flags
+    exit 1
+fi
+
+# Process command based on universal flag parsing
+case "$COMMAND" in
     create)
-        shift
-        name=$1
-        accelerator_type=${2:-$ACCELERATOR_TYPE}
-        runtime_version=${3:-$RUNTIME_VERSION}
+        # Get the positional arguments
+        name=${POSITIONAL_ARGS[0]}
+        accelerator_type=${POSITIONAL_ARGS[1]:-$ACCELERATOR_TYPE}
+        runtime_version=${POSITIONAL_ARGS[2]:-$RUNTIME_VERSION}
         
         if [[ -z "$name" ]]; then
             print_error "TPU name is required"
@@ -1224,14 +1440,18 @@ case "$1" in
             exit 1
         fi
         
-        shift 3 || true
+        # Build arguments from flags
+        flags="--zone=$FLAG_zone"
+        [[ "$FLAG_no_attach" == true ]] && flags+=" --no-attach"
+        [[ "$FLAG_spot" == true ]] && flags+=" --spot"
+        [[ "$FLAG_queued" == true ]] && flags+=" --queued"
         
-        create_tpu "$name" "$accelerator_type" "$runtime_version" "$@"
+        # Call the create_tpu function with all arguments
+        create_tpu $name $accelerator_type $runtime_version $flags
         ;;
     
     delete)
-        shift
-        name=$1
+        name=${POSITIONAL_ARGS[0]}
         
         if [[ -z "$name" ]]; then
             print_error "TPU name is required"
@@ -1239,58 +1459,37 @@ case "$1" in
             exit 1
         fi
         
-        shift 1
-        
-        # Parse arguments, extract zone and remaining args
-        parsed_args=$(parse_args "$@")
-        zone=$(echo "$parsed_args" | cut -d '|' -f1)
-        
-        delete_tpu "$name" "$zone"
+        delete_tpu "$name" "$FLAG_zone"
         ;;
         
     start)
-        shift
-        name=$1
+        name=${POSITIONAL_ARGS[0]}
         
         if [[ -z "$name" ]]; then
             print_error "TPU name is required"
             show_help
             exit 1
         fi
-        
-        shift 1
-        
-        # Parse arguments, extract zone and remaining args
-        parsed_args=$(parse_args "$@")
-        zone=$(echo "$parsed_args" | cut -d '|' -f1)
         
         # Starting TPU implementation would go here
         print_error "Start command not implemented yet"
         ;;
         
     stop)
-        shift
-        name=$1
+        name=${POSITIONAL_ARGS[0]}
         
         if [[ -z "$name" ]]; then
             print_error "TPU name is required"
             show_help
             exit 1
         fi
-        
-        shift 1
-        
-        # Parse arguments, extract zone and remaining args
-        parsed_args=$(parse_args "$@")
-        zone=$(echo "$parsed_args" | cut -d '|' -f1)
         
         # Stopping TPU implementation would go here
         print_error "Stop command not implemented yet"
         ;;
         
     update-ssh-config)
-        shift
-        name=$1
+        name=${POSITIONAL_ARGS[0]}
         
         if [[ -z "$name" ]]; then
             print_error "TPU name is required"
@@ -1298,18 +1497,11 @@ case "$1" in
             exit 1
         fi
         
-        shift 1
-        
-        # Parse arguments, extract zone and remaining args
-        parsed_args=$(parse_args "$@")
-        zone=$(echo "$parsed_args" | cut -d '|' -f1)
-        
-        update_ssh_config "$name" "$zone"
+        update_ssh_config "$name" "$FLAG_zone"
         ;;
     
     ssh)
-        shift
-        name=$1
+        name=${POSITIONAL_ARGS[0]}
         
         if [[ -z "$name" ]]; then
             print_error "TPU name is required"
@@ -1317,19 +1509,12 @@ case "$1" in
             exit 1
         fi
         
-        shift 1
-        
-        # Parse arguments, extract zone and remaining args
-        parsed_args=$(parse_args "$@")
-        zone=$(echo "$parsed_args" | cut -d '|' -f1)
-        
-        ssh_to_tpu "$name" "$zone"
+        ssh_to_tpu "$name" "$FLAG_zone"
         ;;
         
     attach-disk)
-        shift
-        name=$1
-        disk_name=${2:-$DISK_NAME}
+        name=${POSITIONAL_ARGS[0]}
+        disk_name=${POSITIONAL_ARGS[1]:-$DISK_NAME}
         
         if [[ -z "$name" ]]; then
             print_error "TPU name is required"
@@ -1337,18 +1522,11 @@ case "$1" in
             exit 1
         fi
         
-        shift 2 || true
-        
-        # Parse arguments, extract zone and remaining args
-        parsed_args=$(parse_args "$@")
-        zone=$(echo "$parsed_args" | cut -d '|' -f1)
-        
-        attach_disk "$name" "$disk_name" "$zone"
+        attach_disk "$name" "$disk_name" "$FLAG_zone"
         ;;
         
     copy-github-key)
-        shift
-        name=$1
+        name=${POSITIONAL_ARGS[0]}
         
         if [[ -z "$name" ]]; then
             print_error "TPU name is required"
@@ -1356,29 +1534,17 @@ case "$1" in
             exit 1
         fi
         
-        shift 1
-        
-        # Parse arguments, extract zone and remaining args
-        parsed_args=$(parse_args "$@")
-        zone=$(echo "$parsed_args" | cut -d '|' -f1)
-        
-        copy_github_key "$name" "$zone"
+        copy_github_key "$name" "$FLAG_zone"
         ;;
         
     list)
-        shift
-        # Parse arguments, extract zone and remaining args
-        parsed_args=$(parse_args "$@")
-        zone=$(echo "$parsed_args" | cut -d '|' -f1)
-        
-        list_tpus "$zone"
+        list_tpus "$FLAG_zone"
         ;;
         
     copy)
-        shift
-        name=$1
-        source=$2
-        destination=$3
+        name=${POSITIONAL_ARGS[0]}
+        source=${POSITIONAL_ARGS[1]}
+        destination=${POSITIONAL_ARGS[2]}
         
         if [[ -z "$name" || -z "$source" || -z "$destination" ]]; then
             print_error "TPU name, source, and destination are required"
@@ -1386,38 +1552,26 @@ case "$1" in
             exit 1
         fi
         
-        shift 3
-        
-        # Parse arguments, extract zone and remaining args
-        parsed_args=$(parse_args "$@")
-        zone=$(echo "$parsed_args" | cut -d '|' -f1)
-        
-        copy_to_tpu "$name" "$source" "$destination" "$zone"
+        copy_to_tpu "$name" "$source" "$destination" "$FLAG_zone"
         ;;
         
     execute)
-        shift
-        name=$1
-        command=$2
-        
-        if [[ -z "$name" || -z "$command" ]]; then
+        name=${POSITIONAL_ARGS[0]}
+        # Combine all remaining positional arguments as the command to execute
+        if [[ ${#POSITIONAL_ARGS[@]} -lt 2 ]]; then
             print_error "TPU name and command are required"
             show_help
             exit 1
         fi
         
-        shift 2
+        # All arguments after the first one constitute the command
+        command="${POSITIONAL_ARGS[@]:1}"
         
-        # Parse arguments, extract zone and remaining args
-        parsed_args=$(parse_args "$@")
-        zone=$(echo "$parsed_args" | cut -d '|' -f1)
-        
-        execute_on_tpu "$name" "$command" "$zone"
+        execute_on_tpu "$name" "$command" "$FLAG_zone"
         ;;
         
     setup)
-        shift
-        name=$1
+        name=${POSITIONAL_ARGS[0]}
         
         if [[ -z "$name" ]]; then
             print_error "TPU name is required"
@@ -1425,21 +1579,20 @@ case "$1" in
             exit 1
         fi
         
-        shift 1
-        
-        # Parse arguments, extract zone and remaining args
-        parsed_args=$(parse_args "$@")
-        zone=$(echo "$parsed_args" | cut -d '|' -f1)
-        
-        setup_tpu "$name" "$zone"
+        # Pass GCS bucket if provided
+        setup_tpu "$name" "$FLAG_zone" "$FLAG_mount_gcs"
         ;;
         
     spawn)
-        shift
-        base_name=$1
-        count=$2
-        accelerator_type=${3:-$ACCELERATOR_TYPE}
-        user_command=$4
+        base_name=${POSITIONAL_ARGS[0]}
+        count=${POSITIONAL_ARGS[1]}
+        accelerator_type=${POSITIONAL_ARGS[2]:-$ACCELERATOR_TYPE}
+        
+        # Combine all remaining positional arguments as the user command
+        user_command=""
+        if [[ ${#POSITIONAL_ARGS[@]} -gt 3 ]]; then
+            user_command="${POSITIONAL_ARGS[@]:3}"
+        fi
         
         if [[ -z "$base_name" || -z "$count" ]]; then
             print_error "Base name and count are required"
@@ -1452,18 +1605,16 @@ case "$1" in
             print_error "Count must be a positive integer"
             exit 1
         fi
-
-        # Check for force-recreate flag
-        for arg in "$@"; do
-            if [[ "$arg" == "--force-recreate" ]]; then
-                FORCE_RECREATE_SESSION=true
-                print_warning "Force recreate tmux session enabled"
-                break
-            fi
-        done
         
-        shift 4 || true
-        spawn_tpus "$base_name" "$count" "$accelerator_type" "$user_command" "$@"
+        # Construct arguments for spawn_tpus
+        flags="--zone=$FLAG_zone"
+        [[ "$FLAG_no_attach" == true ]] && flags+=" --no-attach"
+        [[ "$FLAG_spot" == true ]] && flags+=" --spot"
+        [[ "$FLAG_queued" == true ]] && flags+=" --queued"
+        [[ "$FLAG_force_recreate" == true ]] && flags+=" --force-recreate"
+        
+        # Call spawn_tpus with all arguments
+        spawn_tpus "$base_name" "$count" "$accelerator_type" "$user_command" $flags
         ;;
         
     help|--help|-h)
@@ -1475,7 +1626,7 @@ case "$1" in
         ;;
         
     *)
-        print_error "Unknown command: $1"
+        print_error "Unknown command: $COMMAND"
         show_help
         exit 1
         ;;
