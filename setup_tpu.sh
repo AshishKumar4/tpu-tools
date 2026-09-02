@@ -55,6 +55,7 @@ pip install flaxdiff gcsfs decord video-reader-rs colorlog
 # Add env vars to .bashrc for future SSH sessions
 echo "export PATH=\$HOME/miniconda3/envs/flaxdiff/bin:\$HOME/miniconda3/bin:\$PATH" >> ~/.bashrc
 echo "export TOKENIZERS_PARALLELISM=false" >> ~/.bashrc
+echo "export WANDB_CACHE_DIR=/tmp/wandb-cache" >> ~/.bashrc
 
 ulimit -n 65535
 

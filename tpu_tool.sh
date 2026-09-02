@@ -22,6 +22,11 @@ readonly NC='\033[0m' # No Color
 ACCELERATOR_TYPE="v4-8"
 RUNTIME_VERSION="tpu-ubuntu2204-base"
 ZONE="us-central2-b" # Default zone, change as needed
+ALL_TPU_ZONES=(
+    "us-central2-b"
+    "europe-west4-a"
+    "us-east1-d"
+)
 DISK_NAME="tpu-dev-disk"
 DISK_MODE="read-write"
 SSH_CONFIG_FILE="$HOME/.ssh/config"
@@ -65,6 +70,7 @@ function parse_flags {
             # Handle flags with values (--flag=value or --flag value)
             --zone=*)
                 FLAG_zone="${1#*=}"
+                FLAG_zone_explicit=true
                 shift
                 ;;
             --zone)
@@ -73,6 +79,7 @@ function parse_flags {
                     return 1
                 fi
                 FLAG_zone="$2"
+                FLAG_zone_explicit=true
                 shift 2
                 ;;
             --mount-gcs=*)
@@ -349,6 +356,39 @@ function get_external_ip {
     gcloud compute tpus tpu-vm describe "$name" --zone "$zone" --format='get(networkEndpoints[0].accessConfig.externalIp)' 2>/dev/null
 }
 
+# Resolve the zone for a TPU by searching across all known zones.
+# Usage: resolve_zone <tpu_name>
+# Returns: prints the zone name, or returns 1 if not found
+function resolve_zone {
+    local name=$1
+    for z in "${ALL_TPU_ZONES[@]}"; do
+        if gcloud compute tpus tpu-vm describe "$name" --zone="$z" --format='get(name)' &>/dev/null; then
+            echo "$z"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# Auto-detect zone for a TPU if --zone was not explicitly provided.
+# Sets FLAG_zone to the detected zone, or exits with error.
+# Usage: auto_detect_zone <tpu_name>
+function auto_detect_zone {
+    local name=$1
+    if [[ -z "${FLAG_zone_explicit:-}" ]]; then
+        print_info "Auto-detecting zone for ${CYAN}${name}${NC}..."
+        local detected_zone
+        detected_zone=$(resolve_zone "$name")
+        if [[ $? -eq 0 && -n "$detected_zone" ]]; then
+            FLAG_zone="$detected_zone"
+            print_info "Found ${CYAN}${name}${NC} in zone ${CYAN}${detected_zone}${NC}"
+        else
+            print_error "TPU '${name}' not found in any zone (${ALL_TPU_ZONES[*]})"
+            exit 1
+        fi
+    fi
+}
+
 function create_tpu {   
     local name=""
     local accelerator_type=$ACCELERATOR_TYPE
@@ -401,6 +441,15 @@ function create_tpu {
     name=${positional_args[0]}
     [[ ${#positional_args[@]} -gt 1 ]] && accelerator_type=${positional_args[1]}
     [[ ${#positional_args[@]} -gt 2 ]] && runtime_version=${positional_args[2]}
+
+    # Auto-select runtime version based on accelerator type if not explicitly provided
+    if [[ ${#positional_args[@]} -le 2 ]]; then
+        case "$accelerator_type" in
+            v6e*) runtime_version="v2-alpha-tpuv6e" ;;
+            v5e*) runtime_version="v2-alpha-tpuv5e" ;;
+            v5p*) runtime_version="v2-alpha-tpuv5" ;;
+        esac
+    fi
 
     local additional_args=""
     
@@ -650,32 +699,45 @@ function copy_github_key {
 }
 
 function list_tpus {
-    local zone=${1:-$ZONE}
-    
-    print_header "TPU VMs in Zone: ${zone}"
-    
-    echo -e "${BOLD}${UNDERLINE}ID\tNAME\tACCELERATOR\tSTATE\tIP ADDRESS${NC}"
-    
-    local tpu_list=$(gcloud compute tpus tpu-vm list --zone="$zone" --format="table[no-heading](id,name,acceleratorType,state,networkEndpoints[0].accessConfig.externalIp)")
-    
-    if [[ -z "$tpu_list" ]]; then
-        print_info "No TPU VMs found in zone ${zone}"
+    local zone=${1:-"all"}
+
+    local zones_to_search=()
+    if [[ "$zone" == "all" ]]; then
+        zones_to_search=("${ALL_TPU_ZONES[@]}")
+        print_header "TPU VMs across all zones"
     else
-        local id name accelerator_type state ip
-        
-        while IFS=$'\t' read -r id name accelerator_type state ip; do
-            local state_color
-            
-            case "$state" in
-                READY) state_color="${GREEN}" ;;
-                CREATING) state_color="${YELLOW}" ;;
-                STOPPING|STOPPED) state_color="${BLUE}" ;;
-                PREEMPTED) state_color="${MAGENTA}" ;;
-                *) state_color="${RED}" ;;
-            esac
-            
-            echo -e "${id}\t${BOLD}${name}${NC}\t${CYAN}${accelerator_type}${NC}\t${state_color}${state}${NC}\t${ip}"
-        done <<< "$tpu_list"
+        zones_to_search=("$zone")
+        print_header "TPU VMs in Zone: ${zone}"
+    fi
+
+    echo -e "${BOLD}${UNDERLINE}NAME\tZONE\tACCELERATOR\tSTATE\tIP ADDRESS${NC}"
+
+    local found_any=false
+    for z in "${zones_to_search[@]}"; do
+        local tpu_list=$(gcloud compute tpus tpu-vm list --zone="$z" --format="table[no-heading](name,acceleratorType,state,networkEndpoints[0].accessConfig.externalIp)" 2>/dev/null)
+
+        if [[ -n "$tpu_list" ]]; then
+            found_any=true
+            local name accelerator_type state ip
+
+            while IFS=$'\t' read -r name accelerator_type state ip; do
+                local state_color
+
+                case "$state" in
+                    READY) state_color="${GREEN}" ;;
+                    CREATING) state_color="${YELLOW}" ;;
+                    STOPPING|STOPPED) state_color="${BLUE}" ;;
+                    PREEMPTED) state_color="${MAGENTA}" ;;
+                    *) state_color="${RED}" ;;
+                esac
+
+                echo -e "${BOLD}${name}${NC}\t${DIM}${z}${NC}\t${CYAN}${accelerator_type}${NC}\t${state_color}${state}${NC}\t${ip}"
+            done <<< "$tpu_list"
+        fi
+    done
+
+    if [[ "$found_any" == false ]]; then
+        print_info "No TPU VMs found"
     fi
 }
 
@@ -1268,7 +1330,7 @@ function spawn_tpus {
             echo "Starting creation of TPU ${tpu_name} at $(date)" > "$tpu_log"
             
             # Create the TPU with error handling
-            if create_tpu "$tpu_name" "$accelerator_type" "$RUNTIME_VERSION" $additional_args >> "$tpu_log" 2>&1; then
+            if create_tpu "$tpu_name" "$accelerator_type" $additional_args >> "$tpu_log" 2>&1; then
                 echo "Successfully created TPU ${tpu_name}" >> "$tpu_log"
                 
                 # Update pane to show setup in progress
@@ -1432,33 +1494,37 @@ case "$COMMAND" in
         # Get the positional arguments
         name=${POSITIONAL_ARGS[0]}
         accelerator_type=${POSITIONAL_ARGS[1]:-$ACCELERATOR_TYPE}
-        runtime_version=${POSITIONAL_ARGS[2]:-$RUNTIME_VERSION}
-        
+
         if [[ -z "$name" ]]; then
             print_error "TPU name is required"
             show_help
             exit 1
         fi
-        
+
         # Build arguments from flags
         flags="--zone=$FLAG_zone"
         [[ "$FLAG_no_attach" == true ]] && flags+=" --no-attach"
         [[ "$FLAG_spot" == true ]] && flags+=" --spot"
         [[ "$FLAG_queued" == true ]] && flags+=" --queued"
-        
-        # Call the create_tpu function with all arguments
-        create_tpu $name $accelerator_type $runtime_version $flags
+
+        # Only pass runtime_version if explicitly provided by user
+        if [[ -n "${POSITIONAL_ARGS[2]:-}" ]]; then
+            create_tpu $name $accelerator_type "${POSITIONAL_ARGS[2]}" $flags
+        else
+            create_tpu $name $accelerator_type $flags
+        fi
         ;;
     
     delete)
         name=${POSITIONAL_ARGS[0]}
-        
+
         if [[ -z "$name" ]]; then
             print_error "TPU name is required"
             show_help
             exit 1
         fi
-        
+
+        auto_detect_zone "$name"
         delete_tpu "$name" "$FLAG_zone"
         ;;
         
@@ -1490,68 +1556,78 @@ case "$COMMAND" in
         
     update-ssh-config)
         name=${POSITIONAL_ARGS[0]}
-        
+
         if [[ -z "$name" ]]; then
             print_error "TPU name is required"
             show_help
             exit 1
         fi
-        
+
+        auto_detect_zone "$name"
         update_ssh_config "$name" "$FLAG_zone"
         ;;
     
     ssh)
         name=${POSITIONAL_ARGS[0]}
-        
+
         if [[ -z "$name" ]]; then
             print_error "TPU name is required"
             show_help
             exit 1
         fi
-        
+
+        auto_detect_zone "$name"
         ssh_to_tpu "$name" "$FLAG_zone"
         ;;
         
     attach-disk)
         name=${POSITIONAL_ARGS[0]}
         disk_name=${POSITIONAL_ARGS[1]:-$DISK_NAME}
-        
+
         if [[ -z "$name" ]]; then
             print_error "TPU name is required"
             show_help
             exit 1
         fi
-        
+
+        auto_detect_zone "$name"
         attach_disk "$name" "$disk_name" "$FLAG_zone"
         ;;
         
     copy-github-key)
         name=${POSITIONAL_ARGS[0]}
-        
+
         if [[ -z "$name" ]]; then
             print_error "TPU name is required"
             show_help
             exit 1
         fi
-        
+
+        auto_detect_zone "$name"
         copy_github_key "$name" "$FLAG_zone"
         ;;
         
     list)
-        list_tpus "$FLAG_zone"
+        # Default to listing all zones unless --zone was explicitly specified
+        if [[ -z "${FLAG_zone_explicit:-}" ]]; then
+            list_tpus "all"
+        else
+            list_tpus "$FLAG_zone"
+        fi
         ;;
         
     copy)
         name=${POSITIONAL_ARGS[0]}
         source=${POSITIONAL_ARGS[1]}
         destination=${POSITIONAL_ARGS[2]}
-        
+
         if [[ -z "$name" || -z "$source" || -z "$destination" ]]; then
             print_error "TPU name, source, and destination are required"
             show_help
             exit 1
         fi
-        
+
+        auto_detect_zone "$name"
         copy_to_tpu "$name" "$source" "$destination" "$FLAG_zone"
         ;;
         
@@ -1563,22 +1639,24 @@ case "$COMMAND" in
             show_help
             exit 1
         fi
-        
+
         # All arguments after the first one constitute the command
         command="${POSITIONAL_ARGS[@]:1}"
-        
+
+        auto_detect_zone "$name"
         execute_on_tpu "$name" "$command" "$FLAG_zone"
         ;;
         
     setup)
         name=${POSITIONAL_ARGS[0]}
-        
+
         if [[ -z "$name" ]]; then
             print_error "TPU name is required"
             show_help
             exit 1
         fi
-        
+
+        auto_detect_zone "$name"
         # Pass GCS bucket if provided
         setup_tpu "$name" "$FLAG_zone" "$FLAG_mount_gcs"
         ;;
